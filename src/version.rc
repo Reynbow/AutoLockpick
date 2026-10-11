@@ -1,0 +1,33 @@
+// Version information shown in the DLL's Properties > Details tab, so it's clear this dsound.dll is
+// the AutoLockpick mod and not the Windows file.
+#include <winver.h>
+
+#include "version.h"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION ALP_VERSION_MAJOR, ALP_VERSION_MINOR, ALP_VERSION_PATCH, 0
+ PRODUCTVERSION ALP_VERSION_MAJOR, ALP_VERSION_MINOR, ALP_VERSION_PATCH, 0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "ProductName", "AutoLockpick (Hellraiser: Revival)"
+      VALUE "FileDescription", "AutoLockpick - solves the lockpicking puzzle for you in Clive Barker's Hellraiser: Revival (dsound.dll proxy)"
+      VALUE "FileVersion", ALP_VERSION_STRING
+      VALUE "ProductVersion", ALP_VERSION_STRING
+      VALUE "InternalName", "AutoLockpick"
+      VALUE "OriginalFilename", "dsound.dll"
+      VALUE "Comments", "Forwards all dsound functions to the Windows copy. Delete this file to uninstall the mod."
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END
