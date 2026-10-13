@@ -236,7 +236,9 @@ void* LockpickItem() {
     if (!obj || ue::IsDefaultObject(obj) || !ue::NameEquals(ue::At<ue::FName>(obj, ue::L.objName), kLockpickItem)) {
       continue;
     }
-    if (C.ItemInfoBase ? ue::IsA(obj, C.ItemInfoBase) : !ue::SameText(ue::ClassName(obj), "Package")) {
+    // The asset's own class is the game's Item (/Script/Project), not an ItemInfoBase
+    static void* const itemClass = ue::FindObjectIn("Class", "Item", "/Script/Project");
+    if (itemClass && ue::IsA(obj, itemClass)) {
       cached = obj;
       break;
     }
@@ -286,6 +288,132 @@ int CountCarried(void* worldContext, void* pawn, void* item) {
   ue::At<void*>(q, l.item) = item;
   F.GetItemCountInInventory.Call(manager, q);
   return ue::At<int32_t>(q, l.count);
+}
+
+// ---- giving a lockpick -----------------------------------------------------------------------
+//
+// The game refuses a lockpick lock before its puzzle even starts while the player carries no
+// lockpick, so with GiveLockpick on, walking up to a lockpick lock with none carried adds one the way
+// the game's own GiveItem cheat does. It's spent as usual.
+
+// Seconds between sweeps of the object table for lockpick locks.
+constexpr double kNearLockEvery = 1.0;
+// How close (Unreal units, cm) the player must be to a lockpick lock to get a lockpick.
+constexpr double kNearLock = 400.0;
+
+// The world position of |actor|; false if the game can't be asked.
+bool ActorLocation(void* actor, double (&out)[3]) {
+  static ue::Function fn;
+  static bool bound = fn.Bind(ue::FindClass("Actor"), "K2_GetActorLocation") && fn.Return() >= 0 &&
+                      fn.ReturnSize() == 24 && fn.ParamsSize() <= kMaxParams;
+  if (!bound || !actor) return false;
+  alignas(16) uint8_t p[kMaxParams] = {};
+  fn.Call(actor, p);
+  for (int i = 0; i < 3; ++i) out[i] = ue::At<double>(p, fn.Return() + i * 8);
+  return true;
+}
+
+// Adds one lockpick to |pawn|'s inventory when it carries none.
+void GiveLockpick(void* pawn) {
+  // As the game's own cheat (BP_InfernoCheatManager.GiveItem) does it: CreateAndInitializeItem(Item,
+  // Player, out ItemInfo) makes the item and places it in the inventory grid; ItemPos.X == -1 means
+  // there was no room. A placed one goes into the save game with AddPlayerItemToSaveGame(ItemInfo).
+  struct Layout {
+    bool checked = false, ok = false;
+    int32_t context = -1, manager = -1, item = -1, owner = -1, info = -1, save = -1, pos = -1;
+    ue::Function create, addToSave;
+  };
+  static Layout l;
+  void* item = LockpickItem();
+  if (!item) {
+    LOG("Give lockpick: the lockpick item (%s) isn't loaded", kLockpickItem);
+    return;
+  }
+  if (const int carried = CountCarried(pawn, pawn, item); carried != 0) {
+    if (carried < 0) LOG("Give lockpick: the inventory can't be asked");
+    return;
+  }
+  if (!l.checked) {
+    l.checked = true;
+    void* itemManager = ue::FindObjectIn("Class", "ItemManager", "/Script/Project");
+    const std::vector<ue::Param> gp = F.GetItemManager.Params();
+    const ue::Param* context = ParamOfType(gp, "ObjectProperty");
+    l.ok = itemManager && context && F.GetItemManager.Return() >= 0 && l.create.Bind(itemManager, "CreateAndInitializeItem") &&
+           l.addToSave.Bind(itemManager, "AddPlayerItemToSaveGame") && l.create.ParamsSize() <= kMaxParams &&
+           l.addToSave.ParamsSize() <= kMaxParams && C.ItemInfoBase;
+    if (l.ok) {
+      const std::vector<ue::Param> cp = l.create.Params(), sp = l.addToSave.Params();
+      const ue::Param* what = ParamOfType(cp, "ObjectProperty", 0);
+      const ue::Param* owner = ParamOfType(cp, "ObjectProperty", 1);
+      const ue::Param* info = ParamOfType(cp, "ObjectProperty", 2);
+      const ue::Param* save = ParamOfType(sp, "ObjectProperty");
+      const ue::Prop pos = ue::FindProp(C.ItemInfoBase, "ItemPos");
+      l.ok = what && owner && info && save && pos.Valid() && pos.size == 16;
+      if (l.ok) {
+        l.context = context->offset;
+        l.manager = F.GetItemManager.Return();
+        l.item = what->offset;
+        l.owner = owner->offset;
+        l.info = info->offset;
+        l.save = save->offset;
+        l.pos = pos.offset;
+      }
+    }
+    if (!l.ok) LOG("Give lockpick: ItemManager::CreateAndInitializeItem not found, no lockpicks are given");
+  }
+  if (!l.ok) return;
+
+  alignas(16) uint8_t p[kMaxParams] = {};
+  ue::At<void*>(p, l.context) = pawn;
+  F.GetItemManager.Call(C.CoreGameplayStaticsCDO, p);
+  void* manager = ue::At<void*>(p, l.manager);
+  if (!manager) return;
+  alignas(16) uint8_t q[kMaxParams] = {};
+  ue::At<void*>(q, l.item) = item;
+  ue::At<void*>(q, l.owner) = pawn;
+  l.create.Call(manager, q);
+  void* info = ue::At<void*>(q, l.info);
+  if (!info || !ue::IsValid(info)) {
+    LOG("Give lockpick: the game made no lockpick");
+    return;
+  }
+  if (ue::At<double>(info, l.pos) == -1.0) {
+    LOG("Give lockpick: the inventory has no room for a lockpick; make room and walk up to the lock again");
+    return;
+  }
+  alignas(16) uint8_t s[kMaxParams] = {};
+  ue::At<void*>(s, l.save) = info;
+  l.addToSave.Call(manager, s);
+  LOG("Give lockpick: added a lockpick");
+}
+
+// Gives a lockpick when the player comes within kNearLock of a lockpick lock.
+void GiveNearLocks(void* pawn) {
+  static double last = -kNearLockEvery;
+  static bool wasNear = false;
+  const double now = util::Now();
+  if (!cfg::S.giveLockpick || now - last < kNearLockEvery) return;
+  last = now;
+
+  // The Blueprint class loads with a level that has a lockpick lock, and again with the next one:
+  // looked up on every sweep, a remembered one can be the copy of a level that's gone.
+  void* cls = ue::FindObject("BlueprintGeneratedClass", kPuzzleClass);
+  double at[3] = {};
+  if (!cls || !pawn || !ue::IsValid(pawn) || !ActorLocation(pawn, at)) {
+    wasNear = false;
+    return;
+  }
+  bool atLock = false;
+  const int32_t n = ue::NumObjects();
+  for (int32_t i = 0; i < n && !atLock; ++i) {
+    void* obj = ue::ObjectAt(i);
+    double lock[3];
+    if (!obj || ue::IsDefaultObject(obj) || !ue::IsA(obj, cls) || !ActorLocation(obj, lock)) continue;
+    const double dx = lock[0] - at[0], dy = lock[1] - at[1], dz = lock[2] - at[2];
+    atLock = dx * dx + dy * dy + dz * dz < kNearLock * kNearLock;
+  }
+  if (atLock && !wasNear) GiveLockpick(pawn);
+  wasNear = atLock;
 }
 
 // ---- the solver ------------------------------------------------------------------------------
@@ -462,6 +590,8 @@ void* LocalController(void* viewportClient) {
 
 void OnFrame(void* viewportClient) {
   void* pc = LocalController(viewportClient);
+  void* pawn = pc ? ue::Ptr(pc, O.Ctrl_Pawn) : nullptr;
+  GiveNearLocks(pawn);
   void* state = pc ? ue::Ptr(pc, O.Ctrl_PlayerState) : nullptr;
   void* task = state && ue::IsA(state, C.CorePlayerState) ? ue::Ptr(state, O.PS_PuzzleRef) : nullptr;
   if (!task || !ue::IsValid(task)) return Leave();
@@ -470,7 +600,7 @@ void OnFrame(void* viewportClient) {
   if (!puzzle || !ue::IsValid(puzzle)) return Leave();
   const PuzzleClass& c = DescribePuzzle(ue::ClassOf(puzzle));
   if (!c.lockpick || !c.usable) return Leave();  // another kind of puzzle
-  Step(puzzle, task, tc, c, ue::Ptr(pc, O.Ctrl_Pawn));
+  Step(puzzle, task, tc, c, pawn);
 }
 
 }  // namespace lockpick
