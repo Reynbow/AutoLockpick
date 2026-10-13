@@ -52,14 +52,15 @@ void Load(const std::wstring& path) {
   S = Defaults();
   if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
     S.enabled = ReadInt(L"General", L"Enabled", S.enabled) != 0;
+    S.giveLockpick = ReadInt(L"General", L"GiveLockpick", S.giveLockpick) != 0;
     S.startDelay = Sanitized(ReadFloat(L"General", L"StartDelay", S.startDelay), 0.f, kMaxStartDelay, S.startDelay);
     S.popup = ReadInt(L"General", L"ShowPopup", S.popup) != 0;
     S.keyToggle = ReadInt(L"Keys", L"ToggleMod", S.keyToggle) & 0xFF;
     S.verbose = ReadInt(L"Debug", L"Verbose", S.verbose) != 0;
   }
   Save();  // creates the file on first run and adds any options introduced by updates
-  LOG("Settings: enabled=%d startDelay=%.2f popup=%d toggleKey=0x%02X verbose=%d", S.enabled, S.startDelay, S.popup,
-      S.keyToggle, S.verbose);
+  LOG("Settings: enabled=%d giveLockpick=%d startDelay=%.2f popup=%d toggleKey=0x%02X verbose=%d", S.enabled,
+      S.giveLockpick, S.startDelay, S.popup, S.keyToggle, S.verbose);
 }
 
 void Save() {
@@ -73,6 +74,8 @@ void Save() {
           "; below switches the mod on and off in game.\n\n[General]\n");
   fprintf(f, "; 1 = lockpicking puzzles are solved for you when you carry a lockpick. 0 = you pick them yourself.\n");
   fprintf(f, "Enabled=%d\n", S.enabled ? 1 : 0);
+  fprintf(f, "; 1 = walking up to a locked container with no lockpick carried adds one to the inventory.\n");
+  fprintf(f, "GiveLockpick=%d\n", S.giveLockpick ? 1 : 0);
   fprintf(f, "; Seconds after the close-up of the lock opens before the pick starts to move (0 to %.0f).\n",
           kMaxStartDelay);
   fprintf(f, "StartDelay=%.2f\n", S.startDelay);
